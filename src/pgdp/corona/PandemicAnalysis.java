@@ -1,6 +1,7 @@
 package pgdp.corona;
 
 import java.time.LocalDate;
+import java.time.Period;
 import java.util.*;
 import java.util.function.Function;
 import java.util.function.Supplier;
@@ -24,14 +25,15 @@ public class PandemicAnalysis {
         System.out.println(safestStates(dataset.stream()));
         System.out.println(firstDate(dataset.stream()));
         System.out.println(newInfectionsByDate(dataset.stream()));
-        System.out.println(dailyNewInfections(dataset.stream()));
+        System.out.println(Arrays.toString(dailyNewInfections(dataset.stream())));
         System.out.println(avgDailyNewInfections(dataset.stream()));
+        System.out.println(totalCasesBySexByAgeGroup(dataset.stream(),Entry::getInfection));
     }
-    //Lembrar de testar todos esses metodos
+    //First 3 methods are similar in the structure, filter the type -> mapToInt -> sum
     public static int totalCases(Stream<Entry> entryStream, CaseReport.Getter getter){
         return entryStream
-            .filter(x -> getter.get(x).type.equals(CaseReport.Type.NEW) || getter.get(x).type.equals(CaseReport.Type.CORRECTION)|| getter.get(x).type.equals(CaseReport.Type.NOT_NEW))
-            .mapToInt(x -> getter.get(x).count)
+                .filter(x -> getter.get(x).type.equals(CaseReport.Type.NEW) || getter.get(x).type.equals(CaseReport.Type.NOT_NEW))
+                .mapToInt(x -> getter.get(x).count)
                 .sum();
     }
 
@@ -44,57 +46,35 @@ public class PandemicAnalysis {
 
     public static int activeInfections(Stream<Entry> entryStream){
         return entryStream
-            .filter(x -> x.getRecovery().type.equals(CaseReport.Type.NEW) || x.getInfection().type.equals(CaseReport.Type.NEW))
-                .mapToInt(x -> x.getInfection().count - x.getRecovery().count)
+                .filter(x -> !x.getInfection().type.equals(CaseReport.Type.CORRECTION) && !x.getRecovery().type.equals(CaseReport.Type.CORRECTION)
+                        && !x.getDeath().type.equals(CaseReport.Type.CORRECTION))
+                .mapToInt(x -> x.getInfection().count - x.getRecovery().count - x.getDeath().count)
                 .sum();
     }
 
-    static int index = -1;
-
-//    public static List<String> safestStates(Stream<Entry> entryStream){
-//        List result  =  entryStream
-//                .filter(x -> x.getInfection().type.equals(CaseReport.Type.NEW) ||  x.getInfection().type.equals(CaseReport.Type.NOT_NEW))
-//                .collect(Collectors.groupingBy(Entry::getState,Collectors.summingInt(x -> x.getInfection().count)))
-//                .entrySet()
-//                .stream()
-//                .sorted(Comparator.comparing(Map.Entry::getValue))
-//                .collect(Collectors.toList());
-//        List resultado = new ArrayList<>();
-//        for (int i = 0; i <result.size(); i++) {
-//            resultado.add(result.get(0));
-//        }
-//         return resultado;
-//    }
-
     public static List<String> safestStates(Stream<Entry> entryStream){
-        List<String> list = new ArrayList<>();
-        List<Integer> cases = new ArrayList<>();
-        List<String> result = new ArrayList<>();
+        //Map that groups each state to their specific number of infections
+        Map<String, Integer> map = new HashMap<>();
         entryStream
-                .forEach(s -> {
-                    if (!list.contains(s.getState())){
-                        list.add(s.getState());
-                        result.add(s.getState());
-                        cases.add(s.getInfection().count);
-                        index ++;
+                .filter(x -> !x.getState().isEmpty() || !x.getInfection().type.equals(CaseReport.Type.CORRECTION) && !x.getRecovery().type.equals(CaseReport.Type.CORRECTION)
+                        && !x.getDeath().type.equals(CaseReport.Type.CORRECTION))
+                .forEach(x -> {//I tried multiple ways to not use forEach but this is the only way I could manage to do it
+                    if(map.containsKey(x.getState())){//Condition to add the infections to each state
+                        int oldValue = map.get(x.getState());
+                        map.replace(x.getState(),oldValue + x.getInfection().count-x.getRecovery().count -x.getDeath().count);
                     }else{
-                        cases.set(index,cases.get(index)+s.getInfection().count-s.getRecovery().count);
+                        map.put(x.getState(),x.getInfection().count-x.getRecovery().count -x.getDeath().count);
                     }
                 });
-        list.stream()
-                .forEach(x -> {
-                    if(cases.size() > list.indexOf(x) + 1){//Adicionar for loop para checar todos os outros estados com o proximo,Bayern sai no lugar certo mas sachsen nao
-                         if(cases.get(list.indexOf(x)) > cases.get(list.indexOf(x)+1)){
-                             String helper = result.get(list.indexOf(x));
-                             result.set(list.indexOf(x),list.get(list.indexOf(x)+1));
-                             result.set(list.indexOf(x)+1,helper);
-                         }
-                    }
-                });
-        return result;
+        return map.entrySet().stream()
+                .sorted(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
     }
 
+
     public static LocalDate firstDate(Stream<Entry> entryStream){
+        //Straight forward stream to find the first date
          return entryStream
                 .map(Entry::getReportingDate)
                 .sorted()
@@ -103,39 +83,86 @@ public class PandemicAnalysis {
     }
 
     public static Map<LocalDate, Integer> newInfectionsByDate(Stream<Entry> entryStream){
+        //Stream to build a map of dates and their infections count
         Map<LocalDate, Integer> map = entryStream
                 .filter(x -> x.getInfection().type.equals(CaseReport.Type.NEW) || x.getInfection().type.equals(CaseReport.Type.NOT_NEW))
-                .collect(Collectors.groupingBy(x-> x.getReportingDate(),
-                        Collectors.summingInt(x -> x.getInfection().count)));
-
+                .collect(Collectors.groupingBy(dates-> dates.getReportingDate(),
+                        Collectors.summingInt(count -> count.getInfection().count)));
+        //TreeMap that sorts from earliest date to latest date
         Map<LocalDate, Integer> sort = new TreeMap<LocalDate, Integer>(map);
         return sort;
     }
 
     public static int[] dailyNewInfections(Stream<Entry> entryStream){
-           return entryStream
-                    .filter(x -> x.getInfection().type.equals(CaseReport.Type.NEW))
-                    .mapToInt(x -> x.getInfection().count)
-                    .toArray();
+        //Similar structure to the newInfectionsByDate
+        Map<LocalDate, Integer> map = entryStream
+                .collect(Collectors.groupingBy(dates-> dates.getReportingDate(),
+                        Collectors.summingInt(count -> {//Conditions to add the infection count to NEW type or 0 to other types
+                            if(count.getInfection().type.equals(CaseReport.Type.NEW)){
+                                return count.getInfection().count;
+                            }else{
+                                return 0;
+                            }
+                        })));
+        Map<LocalDate, Integer> sort = new TreeMap<LocalDate, Integer>(map);//Sorting the map chronologically
+
+        //With the sorted by date map, I transformed the days into an array, to easily use the first and last date
+        Object[] dates = sort.keySet().stream().toArray();
+        LocalDate firstDate = (LocalDate) dates[0];
+        LocalDate lastDate = (LocalDate) dates[dates.length-1];
+
+        //For loop to put the days that are missing from the map
+        for (LocalDate i = firstDate; i.isBefore(lastDate); i = i.plusDays(1)) {
+            if(!sort.containsKey(i))
+                sort.put(i,0);
+        }
+        return sort.values().stream().mapToInt(i -> i).toArray();
     }
+
 
     public static double avgDailyNewInfections(Stream<Entry> entryStream){
-        return entryStream
-                .filter(x -> x.getInfection().type.equals(CaseReport.Type.NEW) )
-                .collect(Collectors.groupingBy(Entry::getReportingDate,Collectors.summingInt(value -> value.getInfection().count)))
-                .values()
-                .stream()
-                .mapToInt(x -> x.intValue())
-                .count();
+        //Use of the method newInfectionsByDate to create a sorted map of infections each day
+        Map<LocalDate, Integer> infectionsByDate = newInfectionsByDate(entryStream);
+
+        //With the sorted by date map, I transformed the days into an array, to easily use the first and last date
+        Object[] dates =  infectionsByDate.keySet().toArray();
+        LocalDate firstDate = (LocalDate) dates[0];
+        LocalDate lastDate = (LocalDate) dates[dates.length-1];
+
+        //Using firstDate.until(lastDate), p is the period between the first and the last date(exclusive)
+        Period p = firstDate.until(lastDate);
+
+        double days = p.getDays()+1;//+1 includes the excluded last day
+        double infections = infectionsByDate.values().stream().mapToInt(x->x.intValue()).sum();//Sums the infections
+
+    return infections/days;
     }
 
+    //I tried working on this method multiple ways but i wasn't able to make it work, so I commented out
     public static Map<String, Map<Character, Integer>> totalCasesBySexByAgeGroup(Stream<Entry> entryStream, CaseReport.Getter getter){
-//        return entryStream
-//                .filter(x -> getter.get(x).type.equals(CaseReport.Type.NEW) || getter.get(x).type.equals(CaseReport.Type.CORRECTION)|| getter.get(x).type.equals(CaseReport.Type.NOT_NEW))
-//                .map(x->x.)
-
-    return null;
+        Map<String, Map<Character, Integer>> map = new HashMap<>();
+//        Map<Character, Integer> secondMap = new HashMap<>();
+//
+//        entryStream
+//                .filter(x -> getter.get(x).type.equals(CaseReport.Type.NEW) || getter.get(x).type.equals(CaseReport.Type.NOT_NEW))
+//                .forEach(x -> {
+//                    if(map.containsKey(x.getAgeGroup())){
+//                        if(secondMap.containsKey(x.getSex())){
+//                            int previousAmount = secondMap.get(x.getSex());
+//                            secondMap.replace(x.getSex(),getter.get(x).count + previousAmount);
+//                        } else{
+//                            secondMap.put(x.getSex(),getter.get(x).count);
+//                        }
+//                        map.replace(x.getAgeGroup(),secondMap);
+//                    } else{
+//                        secondMap.clear();
+//                        secondMap.put(x.getSex(),getter.get(x).count);
+//                        map.put(x.getAgeGroup(),secondMap);
+//
+//                    }
+//                        });
+//        return map;
+        return null;
     }
-
 
 }
